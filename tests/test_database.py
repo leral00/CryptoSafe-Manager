@@ -1,14 +1,26 @@
-import unittest
-from src.database.db import Database
+import sys
+import os
+sys.path.insert(0, '.')
+from src.database.db import DatabaseHelper
 
-class TestDatabase(unittest.TestCase):
+TEST_DB = "test_cryptosafe.db"
 
-    def test_add(self):
-        db = Database()
-        db.add_entry("Test", "User", b"123")
-        data = db.get_entries()
-        self.assertTrue(len(data) >= 0)
+def setup_function():
+    if os.path.exists(TEST_DB):
+        os.remove(TEST_DB)
 
+def teardown_function():
+    if os.path.exists(TEST_DB):
+        os.remove(TEST_DB)
 
-if __name__ == "__main__":
-    unittest.main()
+def test_db_initialization():
+    db = DatabaseHelper(TEST_DB)
+    db.initialize_db()
+    result = db.fetchall("SELECT name FROM sqlite_master WHERE type='table' AND name='vault_entries'")
+    assert len(result) == 1
+
+def test_db_indices():
+    db = DatabaseHelper(TEST_DB)
+    db.initialize_db()
+    result = db.fetchall("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_settings_key'")
+    assert len(result) == 1

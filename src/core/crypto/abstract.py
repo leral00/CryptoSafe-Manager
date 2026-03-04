@@ -1,12 +1,10 @@
 from abc import ABC, abstractmethod
-
-
 class EncryptionService(ABC):
 
     @abstractmethod
-    def encrypt(self, data: bytes) -> bytes:
+    def encrypt(self, data: bytes, key: bytes) -> bytes:
         pass
 
     @abstractmethod
-    def decrypt(self, data: bytes) -> bytes:
+    def decrypt(self, ciphertext: bytes, key: bytes) -> bytes:
         pass

@@ -1,8 +1,8 @@
 import tkinter as tk
-class AuditLogViewer(tk.Toplevel):
+from tkinter import ttk
 
-    def __init__(self, master):
-        super().__init__(master)
-        self.title("Audit Log")
-
-        tk.Label(self, text="Audit Log Viewer (Заглушка Sprint 1)").pack(padx=20, pady=20)
+class AuditLogViewer(ttk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.label = ttk.Label(self, text="Audit Log Viewer (Stub for Sprint 5)")
+        self.label.pack(pady=20)

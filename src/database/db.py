@@ -1,65 +1,39 @@
 import sqlite3
-import threading
-from .models import (
-    VAULT_TABLE, VAULT_INDEX,
-    AUDIT_TABLE, AUDIT_INDEX,
-    SETTINGS_TABLE, SETTINGS_INDEX,
-    KEY_STORE_TABLE
-)
-class Database:
-    def __init__(self, db_path="vault.db"):
+from .models import ALL_SCHEMAS
+
+class DatabaseHelper:
+    def __init__(self, db_path):
         self.db_path = db_path
-        self.lock = threading.Lock()
-        self.conn = sqlite3.connect(
-            self.db_path,
-            check_same_thread=False
-        )
-        self.create_tables()
-    def create_tables(self):
-        with self.lock:
-            cursor = self.conn.cursor()
+        self.connection = None
 
-            cursor.execute(VAULT_TABLE)
-            cursor.execute(VAULT_INDEX)
+    def get_connection(self):
+        if not self.connection:
+            self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
+        return self.connection
 
-            cursor.execute(AUDIT_TABLE)
-            cursor.execute(AUDIT_INDEX)
+    def initialize_db(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("PRAGMA user_version")
+        version = cursor.fetchone()[0]
+        
+        if version == 0:
+            for schema in ALL_SCHEMAS:
+                cursor.execute(schema)
+            cursor.execute("PRAGMA user_version = 1")
+            conn.commit()
+            print("Database initialized (Version 1)")
 
-            cursor.execute(SETTINGS_TABLE)
-            cursor.execute(SETTINGS_INDEX)
+    def execute(self, query, params=()):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+        return cursor
 
-            cursor.execute(KEY_STORE_TABLE)
-
-            cursor.execute("PRAGMA user_version = 1;")
-
-            self.conn.commit()
-    def add_entry(self, title, username, encrypted_password,
-                  url="", notes="", created_at="",
-                  updated_at="", tags=""):
-        with self.lock:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                INSERT INTO vault_entries
-                (title, username, encrypted_password,
-                 url, notes, created_at, updated_at, tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                title, username, encrypted_password,
-                url, notes, created_at, updated_at, tags
-            ))
-            self.conn.commit()
-    def get_entries(self):
-        with self.lock:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT id, title, username
-                FROM vault_entries
-            """)
-            return cursor.fetchall()
-    def get_version(self):
-        with self.lock:
-            cursor = self.conn.cursor()
-            cursor.execute("PRAGMA user_version;")
-            return cursor.fetchone()[0]
-    def close(self):
-        self.conn.close()
+    def fetchall(self, query, params=()):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return cursor.fetchall()

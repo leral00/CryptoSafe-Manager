@@ -63,5 +63,21 @@ Sprint 8: Упаковка и развертывание
 ● Docker-контейнеры.
 
 
+Диаграмма потоков данных 
 
+graph TD
+
+    User[Пользователь] -->|Ввод данных| GUI[GUI (View)]
+    
+    GUI -->|Запрос| Core[Core Logic (Controller)]
+    
+    Core -->|Криптография| Crypto[Encryption Service]
+    
+    Core -->|События| Events[Event Bus]
+    
+    Core -->|Чтение/Запись| DB[(Database (Model))]
+    
+    Events -->|Уведомления| AuditLog[Аудит]
+    
+    GUI -->|Отображение| User
 

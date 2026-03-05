@@ -135,5 +135,51 @@ cryptosafe-manager/
 └── requirements.txt
 ```
 
+Установка и запуск
+
+1. Клонирование репозитория
+
+Клонируем проект на свой компьютер:
+
+```bash
+git clone <url-репозитория>
+cd cryptosafe-manager
+```
+
+---
+
+2. Создание виртуальной среды
+
+Рекомендуется использовать виртуальную среду для изоляции зависимостей.
+
+**Linux / macOS**
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+**Windows**
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+3. Установка зависимостей
+
+Устанавливаем необходимые библиотеки:
+
+```bash
+pip install -r requirements.txt
+```
+
+4. Запуск приложения
+
+Запускаем основной скрипт проекта:
+
+```bash
+python main.py
+```
 
 

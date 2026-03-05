@@ -63,6 +63,9 @@ Sprint 8: Упаковка и развертывание
 ● Docker-контейнеры
 
 
+Диаграмма архитектуры
+
+
 ```mermaid
 flowchart TD
 
@@ -90,7 +93,40 @@ end
 ```
 
 
-Диаграмма архитектуры
+```
+cryptosafe-manager/
+├── .github/
+│   └── workflows/
+│       └── tests.yml
+├── src/
+│   ├── core/
+│   │   ├── crypto/
+│   │   │   ├── abstract.py       # Абстрактный класс шифрования
+│   │   │   └── placeholder.py    # Заглушки шифрования и KDF
+│   │   ├── config.py             # Менеджер конфигурации
+│   │   ├── events.py             # Шина событий и AuditManager
+│   │   ├── key_manager.py        # Управление ключами
+│   │   └── state_manager.py      # Управление состоянием
+│   ├── database/
+│   │   ├── db.py                 # Помощник БД
+│   │   └── models.py             # Схемы таблиц
+│   ├── gui/
+│   │   ├── widgets/
+│   │   │   ├── audit_log_viewer.py
+│   │   │   ├── password_entry.py # Виджет ввода пароля
+│   │   │   └── secure_table.py   # Виджет таблицы
+│   │   ├── main_window.py        # Главное окно
+│   │   └── setup_wizard.py       # Мастер настройки (без __init__.py)
+├── tests/
+│   ├── test_crypto.py
+│   ├── test_database.py
+│   ├── test_events.py
+│   └── test_integration.py
+├── Dockerfile
+├── main.py                       # Точка входа
+├── README.md
+└── requirements.txt
+```
 
 
 

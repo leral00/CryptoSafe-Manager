@@ -1,6 +1,5 @@
 from collections import defaultdict
 import threading
-
 class EventType:
     ENTRY_ADDED = "EntryAdded"
     ENTRY_UPDATED = "EntryUpdated"

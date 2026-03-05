@@ -62,29 +62,29 @@ Sprint 8: Упаковка и развертывание
 
 ● Docker-контейнеры
 
-```markdown
 Диаграмма архитектуры
 
 ```mermaid
 flowchart TD
-User["User"] --> GUI["GUI Layer"]
-subgraph GUI_LAYER["src/gui - View Layer"]
-main_win["main_window.py"]
-widgets["widgets"]
-end
+    User --> GUI
+    GUI --> CORE
+    CORE --> DB
 
-GUI --> CORE["Core Logic"]
-subgraph CORE_LAYER["src/core - Logic Layer"]
-crypto["crypto"]
-events["events"]
-conf["config"]
-end
+    subgraph "src/gui"
+        main_window
+        widgets
+    end
 
-CORE --> DB["Database Layer"]
-subgraph DB_LAYER["src/database - Data Layer"]
-db_py["db.py"]
-sqlite["SQLite"]
-end
+    subgraph "src/core"
+        crypto
+        events
+        config
+    end
+
+    subgraph "src/database"
+        db
+        sqlite
+    end
 ```
 
 Структура проекта

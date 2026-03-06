@@ -1,6 +1,7 @@
 import sqlite3
 import os
 from .models import ALL_SCHEMAS
+
 class DatabaseHelper:
     def __init__(self, db_path):
         self.db_path = os.path.abspath(db_path)
@@ -17,6 +18,12 @@ class DatabaseHelper:
         if not self.connection:
             self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
         return self.connection
+
+    def close(self):
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+
     def initialize_db(self):
         conn = self.get_connection()
         cursor = conn.cursor()

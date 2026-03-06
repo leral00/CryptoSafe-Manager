@@ -1,5 +1,6 @@
 import sys
 import os
+import base64
 
 sys.path.insert(0, '.')
 from src.database.db import DatabaseHelper
@@ -17,27 +18,32 @@ def teardown_function():
         os.remove(TEST_DB)
 
 def test_first_run_setup_flow():
-
     assert not os.path.exists(TEST_DB)
 
     db = DatabaseHelper(TEST_DB)
-    db.initialize_db()
 
-    km = KeyManager()
-    salt = km.generate_salt()
-    key = km.derive_key("master_password", salt)
-    km.store_key(key)
+    try:
+        db.initialize_db()
 
-    db.execute("INSERT INTO key_store (key_type, salt) VALUES (?, ?)", ('master', salt))
+        km = KeyManager()
+        salt = km.generate_salt()
+        key = km.derive_key("master_password", salt)
+        km.store_key(key)
 
-    assert os.path.exists(TEST_DB), "DB file should exist"
-    assert km.load_key() == key, "Key should be loaded"
+        salt_str = base64.b64encode(salt).decode('utf-8')
 
-    rows = db.fetchall("SELECT salt FROM key_store WHERE key_type='master'")
-    assert len(rows) == 1, "Salt should be stored"
+        db.execute("INSERT INTO key_store (key_type, salt) VALUES (?, ?)", ('master', salt_str))
+
+        assert os.path.exists(TEST_DB), "DB file should exist"
+        assert km.load_key() == key, "Key should be loaded"
+
+        rows = db.fetchall("SELECT salt FROM key_store WHERE key_type='master'")
+        assert len(rows) == 1, "Salt should be stored"
+
+    finally:
+        db.close()
 
 def test_main_window_imports():
-
     try:
         from src.gui.main_window import MainWindow
         from src.gui.widgets.password_entry import PasswordEntry

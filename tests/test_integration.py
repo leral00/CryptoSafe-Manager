@@ -5,7 +5,6 @@ import base64
 sys.path.insert(0, '.')
 from src.database.db import DatabaseHelper
 from src.core.key_manager import KeyManager
-from src.core.config import ConfigManager
 
 TEST_DB = "test_integration.db"
 
@@ -21,12 +20,13 @@ def test_first_run_setup_flow():
     assert not os.path.exists(TEST_DB)
 
     db = DatabaseHelper(TEST_DB)
-
+    
     try:
         db.initialize_db()
-
+        
         km = KeyManager()
-        salt = km.generate_salt()
+
+        salt = km.generate_salt() 
         key = km.derive_key("master_password", salt)
         km.store_key(key)
 
@@ -35,11 +35,13 @@ def test_first_run_setup_flow():
         db.execute("INSERT INTO key_store (key_type, salt) VALUES (?, ?)", ('master', salt_str))
 
         assert os.path.exists(TEST_DB), "DB file should exist"
-        assert km.load_key() == key, "Key should be loaded"
+        assert km.load_key() == key, "Key should be loaded from memory"
 
         rows = db.fetchall("SELECT salt FROM key_store WHERE key_type='master'")
         assert len(rows) == 1, "Salt should be stored"
 
+        assert rows[0][0] == salt_str
+        
     finally:
         db.close()
 

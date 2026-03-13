@@ -1,4 +1,4 @@
-from .abstract import EncryptionService
+from src.core.crypto.abstract import EncryptionService
 import hashlib
 class AES256Placeholder(EncryptionService):
     def encrypt(self, data: bytes, key: bytes) -> bytes:

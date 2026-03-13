@@ -14,7 +14,6 @@ class VaultEntry:
     updated_at: datetime = None
     tags: str = ""
 
-
 VAULT_ENTRIES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS vault_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,9 +58,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 """
 
+SETTINGS_INDEX_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(setting_key);
+"""
+
 ALL_SCHEMAS = [
     VAULT_ENTRIES_SCHEMA,
     KEY_STORE_SCHEMA,
     SETTINGS_SCHEMA,
-    AUDIT_LOG_SCHEMA
+    AUDIT_LOG_SCHEMA,
+    SETTINGS_INDEX_SCHEMA  
 ]

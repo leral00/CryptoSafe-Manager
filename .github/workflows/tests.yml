@@ -22,7 +22,7 @@ jobs:
         sudo apt-get install -y xvfb
 
     - name: Run tests with xvfb
-      env:
-        PYTHONPATH: .
       run: |
-        xvfb-run -a pytest tests/
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        xvfb-run -a python -m pytest tests/

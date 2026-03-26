@@ -7,12 +7,21 @@ class VaultEntry:
     id: Optional[int] = None
     title: str = ""
     username: str = ""
-    encrypted_password: bytes = b""  
+    encrypted_password: bytes = b""
     url: str = ""
     notes: str = ""
     created_at: datetime = None
     updated_at: datetime = None
     tags: str = ""
+
+USER_TABLE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL
+);
+"""
 
 VAULT_ENTRIES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS vault_entries (
@@ -63,9 +72,10 @@ CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(setting_key);
 """
 
 ALL_SCHEMAS = [
+    USER_TABLE_SCHEMA,
     VAULT_ENTRIES_SCHEMA,
     KEY_STORE_SCHEMA,
     SETTINGS_SCHEMA,
     AUDIT_LOG_SCHEMA,
-    SETTINGS_INDEX_SCHEMA  
+    SETTINGS_INDEX_SCHEMA
 ]

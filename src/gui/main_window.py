@@ -1,14 +1,24 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, simpledialog
+from datetime import datetime
+import os
+import time
+import threading
+import queue
+import sqlite3
+import secrets
+import json
+import hashlib
+import hmac
 from src.core.config import ConfigManager
 from src.core.events import EventBus, EventType, AuditManager
 from src.core.state_manager import StateManager
 from src.core.crypto.placeholder import AES256Placeholder
-from src.core.key_manager import KeyManager
+from src.core.crypto.key_storage import KeyManager
+from src.core.crypto.authentication import AuthManager
 from src.database.db import DatabaseHelper
-from .widgets.password_entry import PasswordEntry
-from .widgets.secure_table import SecureTable
-import os
+from src.gui.widgets.password_entry import PasswordEntry
+from src.gui.widgets.secure_table import SecureTable
 
 class MainWindow:
     def __init__(self, root):
@@ -19,229 +29,461 @@ class MainWindow:
         self.config = ConfigManager()
         self.events = EventBus()
         self.state = StateManager()
-        self.crypto = AES256Placeholder()
-        self.key_manager = KeyManager()
+
+        self.key_manager = KeyManager(ttl=3600)
+        self.crypto = AES256Placeholder(self.key_manager)
+
         self.audit_manager = None
+        self.auth_manager = None
+        self.db = None
 
-        db_path = self.config.get('db_path')
+        self.lockout_until = 0
+        self.inactivity_limit = 3600
+        self.inactivity_timer = None
 
-        if not os.path.exists(db_path):
-            print(f"[INFO] База данных не найдена. Запуск мастера...")
-            self.root.withdraw()
-            self.show_setup_wizard()
-        else:
-            print(f"[INFO] База данных найдена. Загрузка...")
-            self.init_db_and_ui(db_path)
+        self.root.bind('<Key>', self.reset_inactivity_timer)
+        self.root.bind('<Button>', self.reset_inactivity_timer)
+        self.root.bind('<Unmap>', self.on_minimize)
+
+        db_path = self.config.get('db_path', 'cryptosafe.db')
+        self.root.withdraw()
+        self.show_auth_dialog(db_path)
 
     def init_db_and_ui(self, db_path):
         try:
             self.db = DatabaseHelper(db_path)
             self.db.initialize_db()
 
-            self.audit_manager = AuditManager(self.events, self.db)
             self.config.set_db(self.db)
+            self.load_security_settings()
+
+            self.audit_manager = AuditManager(self.events, self.db)
+            self.auth_manager = AuthManager(self.db, self.key_manager)
 
             self.events.subscribe(EventType.USER_LOGGED_IN, self.on_login)
-
             self.build_ui()
             self.root.deiconify()
+            self.reset_inactivity_timer()
+
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось открыть базу данных:\n{e}")
+            messagebox.showerror("Critical Error", "Initialization failed. Check logs.")
+            print(f"[INIT ERROR] {e}")
             self.root.destroy()
 
-    def on_login(self, data):
-        self.update_status_bar(f"Logged in as {data.get('user', 'admin')}")
+    def load_security_settings(self):
+        try:
+            timeout_val = self.config.get('auto_lock_timeout', '3600')
+            self.inactivity_limit = int(timeout_val)
+            self.key_manager._ttl = self.inactivity_limit
+        except Exception as e:
+            print(f"[Config] Error loading settings: {e}")
 
-    def update_status_bar(self, text):
-        if hasattr(self, 'status_bar'):
-            self.status_bar.config(text=text)
+    def show_auth_dialog(self, db_path):
+        auth_win = tk.Toplevel()
+        auth_win.title("Authentication")
+        auth_win.geometry("350x450")
+        auth_win.protocol("WM_DELETE_WINDOW", self.root.destroy)
 
-    def show_setup_wizard(self):
-        wizard = tk.Toplevel()
-        wizard.title("First Run Setup")
-        wizard.geometry("450x450")
-        wizard.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        is_setup = not os.path.exists(db_path)
 
-        ttk.Label(wizard, text="Database Location:").pack(pady=5)
-        path_frame = ttk.Frame(wizard)
-        path_frame.pack(pady=5, fill=tk.X, padx=20)
-        self.wizard_db_path = tk.StringVar(value=self.config.get('db_path'))
-        ttk.Entry(path_frame, textvariable=self.wizard_db_path).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(path_frame, text="Browse", command=self.browse_db_file).pack(side=tk.RIGHT, padx=5)
+        ttk.Label(auth_win, text="CryptoSafe Access", font=('Arial', 14, 'bold')).pack(pady=20)
 
-        ttk.Label(wizard, text="Create Master Password").pack(pady=10)
-        self.wizard_pass = PasswordEntry(wizard)
-        self.wizard_pass.pack(pady=5, fill=tk.X, padx=20)
+        label_text = "Create Master Password:" if is_setup else "Enter Master Password:"
+        ttk.Label(auth_win, text=label_text).pack(pady=5)
 
-        ttk.Label(wizard, text="Confirm Password").pack(pady=10)
-        self.wizard_confirm = PasswordEntry(wizard)
-        self.wizard_confirm.pack(pady=5, fill=tk.X, padx=20)
+        pass_ent = PasswordEntry(auth_win)
+        pass_ent.pack(pady=5, padx=30, fill=tk.X)
 
-        ttk.Label(wizard, text="Encryption Settings (Placeholder):").pack(pady=10)
-        enc_frame = ttk.Frame(wizard)
-        enc_frame.pack(pady=5, fill=tk.X, padx=20)
-        ttk.Label(enc_frame, text="KDF Iterations:").pack(side=tk.LEFT)
-        ttk.Entry(enc_frame, width=10).insert(0, "10000")
-        ttk.Entry(enc_frame, width=10).pack(side=tk.RIGHT)
+        confirm_ent = None
+        if is_setup:
+            ttk.Label(auth_win, text="Confirm Password:").pack(pady=5)
+            confirm_ent = PasswordEntry(auth_win)
+            confirm_ent.pack(pady=5, padx=30, fill=tk.X)
 
-        ttk.Button(wizard, text="Create Vault", command=lambda: self.finish_setup(wizard)).pack(pady=20)
-    def browse_db_file(self):
-        filename = filedialog.asksaveasfilename(defaultextension=".db", filetypes=[("Database", "*.db")])
-        if filename:
-            self.wizard_db_path.set(filename)
+        status_label = ttk.Label(auth_win, text="", foreground="red")
+        status_label.pack(pady=10)
 
-    def finish_setup(self, wizard):
-        p1 = self.wizard_pass.get()
-        p2 = self.wizard_confirm.get()
+        def process_auth():
+            password = pass_ent.get()
 
-        if not p1 or len(p1) < 4:
-            messagebox.showerror("Error", "Password must be at least 4 characters")
-            return
-        if p1 != p2:
-            messagebox.showerror("Error", "Passwords do not match")
-            return
+            if len(password) > 1024:
+                status_label.config(text="Password too long (max 1024 chars)")
+                return
 
-        db_path = self.wizard_db_path.get()
-        db_dir = os.path.dirname(db_path)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir)
+            if is_setup:
+                confirm_pass = confirm_ent.get()
+                if password != confirm_pass:
+                    status_label.config(text="Passwords do not match")
+                    return
 
-        self.db = DatabaseHelper(db_path)
-        self.db.initialize_db()
+                is_strong, msg = self.key_manager.derivator.check_password_strength(password)
+                if not is_strong:
+                    status_label.config(text=f"Weak password: {msg}")
+                    return
 
-        self.config.set_db(self.db)
-        self.config.set('db_path', db_path)
+                try:
+                    self.db = DatabaseHelper(db_path)
+                    self.db.initialize_db()
+                    self.config.set_db(self.db)
+                    self.load_security_settings()
 
-        self.audit_manager = AuditManager(self.events, self.db)
+                    auth_salt = self.key_manager.derivator.generate_salt()
+                    pass_hash = self.key_manager.derivator.derive_argon2(password, auth_salt).hex()
+                    self.db.execute(
+                        "INSERT INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
+                        ('admin', pass_hash, auth_salt.hex())
+                    )
 
-        salt = self.key_manager.generate_salt()
-        key = self.key_manager.derive_key(p1, salt)
-        self.key_manager.store_key(key)
-        self.key_manager.secure_zero(p1.encode())
+                    enc_salt = self.key_manager.derivator.generate_salt(16)
+                    iterations = 100000
+                    encryption_key = self.key_manager.derivator.derive_pbkdf2(password, enc_salt, iterations)
+                    self.key_manager.set_key("master_key", encryption_key)
 
-        self.db.execute("INSERT INTO key_store (key_type, salt) VALUES (?, ?)", ('master', salt))
+                    now = datetime.now().isoformat()
+                    self.db.execute(
+                        "INSERT INTO key_store (key_type, key_data, version, created_at) VALUES (?, ?, ?, ?)",
+                        ('enc_salt', enc_salt, 1, now)
+                    )
+                    params_data = json.dumps({'iterations': iterations}).encode('utf-8')
+                    self.db.execute(
+                        "INSERT INTO key_store (key_type, key_data, version, created_at) VALUES (?, ?, ?, ?)",
+                        ('params', params_data, 1, now)
+                    )
 
-        wizard.destroy()
-        self.events.publish(EventType.USER_LOGGED_IN, {'action': 'USER_LOGGED_IN', 'user': 'admin'})
-        self.init_db_and_ui(db_path)
+                    self.config.set('db_path', db_path)
+
+                    auth_win.destroy()
+                    self.init_db_and_ui(db_path)
+                    self.state.start_session('admin')
+                    self.events.publish(EventType.USER_LOGGED_IN, {'user': 'admin'})
+
+                except Exception as e:
+                    print(f"[SETUP ERROR] {e}")
+                    status_label.config(text="Setup failed. See logs.")
+
+            else:
+                if time.time() < self.lockout_until:
+                    remaining = int(self.lockout_until - time.time())
+                    status_label.config(text=f"Locked. Wait {remaining}s")
+                    return
+
+                if len(password) == 0:
+                    status_label.config(text="Password required")
+                    return
+
+                temp_db = DatabaseHelper(db_path)
+                temp_auth = AuthManager(temp_db, self.key_manager)
+
+                user = temp_db.fetchone("SELECT mfa_secret FROM users WHERE username='admin'")
+                requires_mfa = user and user['mfa_secret']
+
+                login_success = False
+
+                if requires_mfa:
+                    mfa_code = simpledialog.askstring("Two-Factor Auth", "Enter Google Authenticator Code:",
+                                                      parent=auth_win)
+                    if mfa_code:
+                        if temp_auth.login("admin", password, mfa_code=mfa_code):
+                            login_success = True
+                else:
+                    if temp_auth.login("admin", password):
+                        login_success = True
+
+                if login_success:
+                    self.state.reset_failed_attempts()
+                    temp_db.close()
+                    auth_win.destroy()
+                    self.init_db_and_ui(db_path)
+                    self.state.start_session('admin')
+                    self.events.publish(EventType.USER_LOGGED_IN, {'user': 'admin'})
+                else:
+                    temp_db.close()
+                    self.state.record_failed_attempt()
+                    fails = self.state.get_failed_attempts()
+                    delay = 30 if fails >= 5 else (5 if fails >= 3 else 1)
+                    self.lockout_until = time.time() + delay
+                    status_label.config(text=f"Invalid credentials. Locked for {delay}s")
+
+        btn_text = "Create Vault" if is_setup else "Unlock"
+        ttk.Button(auth_win, text=btn_text, command=process_auth).pack(pady=20)
 
     def build_ui(self):
         menubar = tk.Menu(self.root)
 
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="New", command=lambda: print("Stub: New"))
-        file_menu.add_command(label="Open", command=lambda: print("Stub: Open"))
-        file_menu.add_command(label="Backup", command=lambda: print("Stub: Backup"))  # DB-4 Stub
+        file_menu.add_command(label="Lock Session", command=self.lock_app)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=file_menu)
 
         edit_menu = tk.Menu(menubar, tearoff=0)
         edit_menu.add_command(label="Add Entry", command=self.add_entry_dialog)
-        edit_menu.add_command(label="Edit Entry", command=lambda: print("Stub: Edit"))  # Added Edit
-        edit_menu.add_command(label="Delete Entry", command=self.delete_selected_entry)
+        edit_menu.add_command(label="Delete Selected", command=self.delete_selected_entry)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Change Master Password", command=self.show_change_password_dialog)
         menubar.add_cascade(label="Edit", menu=edit_menu)
-
-        view_menu = tk.Menu(menubar, tearoff=0)
-        view_menu.add_command(label="Logs", command=self.show_logs_stub)
-        view_menu.add_command(label="Settings", command=self.show_settings_stub)
-        menubar.add_cascade(label="View", menu=view_menu)
-
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="About", command=lambda: messagebox.showinfo("About", "CryptoSafe Manager v1.0"))
-        menubar.add_cascade(label="Help", menu=help_menu)
 
         self.root.config(menu=menubar)
 
         self.table = SecureTable(self.root)
         self.table.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.status_bar = ttk.Label(self.root, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
         self.load_data()
 
-        self.status_bar = ttk.Label(self.root, text="Status: Locked | Clipboard: Empty", relief=tk.SUNKEN, anchor=tk.W)
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    def on_login(self, data):
+        self.update_status_bar(f"Logged in as {data.get('user')}")
+
+    def update_status_bar(self, text):
+        info = self.state.get_session_info()
+        if info.get('login_time'):
+            time_str = info['login_time'].strftime("%H:%M")
+            text += f" | Session: {time_str}"
+        self.status_bar.config(text=text)
+
+    def reset_inactivity_timer(self, event=None):
+        self.state.update_activity()
+        if self.inactivity_timer:
+            try:
+                self.root.after_cancel(self.inactivity_timer)
+            except:
+                pass
+        self.inactivity_timer = self.root.after(self.inactivity_limit * 1000, self.lock_app)
+
+    def on_minimize(self, event):
+        if event.widget == self.root:
+            self.lock_app()
+
+    def lock_app(self):
+        if self.inactivity_timer:
+            try:
+                self.root.after_cancel(self.inactivity_timer)
+            except:
+                pass
+
+        self.key_manager.clear_cache()
+
+        if hasattr(self, 'table'):
+            for item in self.table.get_children():
+                self.table.delete(item)
+
+        self.root.withdraw()
+        db_path = self.config.get('db_path')
+        if db_path:
+            self.show_auth_dialog(db_path)
 
     def load_data(self):
         for item in self.table.get_children():
             self.table.delete(item)
-        if hasattr(self, 'db'):
+        if self.db:
             rows = self.db.fetchall("SELECT id, title, username FROM vault_entries")
             for row in rows:
-                self.table.insert("", tk.END, values=row)
+                self.table.insert("", tk.END, values=(row['id'], row['title'], row['username']))
 
     def add_entry_dialog(self):
         dialog = tk.Toplevel(self.root)
-        dialog.title("Add Entry")
-        dialog.geometry("300x200")
+        dialog.title("Add New Entry")
+        dialog.geometry("300x350")
 
-        ttk.Label(dialog, text="Title:").grid(row=0, column=0, padx=5, pady=5)
-        title_entry = ttk.Entry(dialog)
-        title_entry.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(dialog, text="Title:").pack(pady=2)
+        title_ent = ttk.Entry(dialog)
+        title_ent.pack(pady=2)
 
-        ttk.Label(dialog, text="Password:").grid(row=1, column=0, padx=5, pady=5)
-        pass_entry = ttk.Entry(dialog, show="*")
-        pass_entry.grid(row=1, column=1, padx=5, pady=5)
+        ttk.Label(dialog, text="Username:").pack(pady=2)
+        user_ent = ttk.Entry(dialog)
+        user_ent.pack(pady=2)
+
+        ttk.Label(dialog, text="Password:").pack(pady=2)
+        pass_ent = ttk.Entry(dialog, show="*")
+        pass_ent.pack(pady=2)
 
         def save():
-            if not title_entry.get():
-                messagebox.showwarning("Error", "Title cannot be empty")
+            title = title_ent.get()
+            if not title:
+                messagebox.showwarning("Warning", "Title is required")
+                return
+            if len(title) > 256:
+                messagebox.showwarning("Warning", "Title too long")
                 return
 
-            key = self.key_manager.load_key()
-            enc_pass = self.crypto.encrypt(pass_entry.get().encode(), key)
+            try:
+                enc_data = self.crypto.encrypt(pass_ent.get().encode(), "master_key")
 
-            self.db.execute(
-                "INSERT INTO vault_entries (title, encrypted_password) VALUES (?, ?)",
-                (title_entry.get(), enc_pass)
-            )
+                try:
+                    audit_key = self.key_manager.get_audit_key()
+                    sig = hmac.new(audit_key, enc_data.encode('utf-8'), hashlib.sha256).hexdigest()
+                    print(f"[FUTURE-1] Entry signed: {sig[:10]}...")
+                except Exception as e:
+                    print(f"Could not sign entry: {e}")
 
-            self.events.publish(EventType.ENTRY_ADDED, {
-                'action': 'ENTRY_ADDED',
-                'title': title_entry.get()
-            })
+                now = datetime.now().isoformat()
+                self.db.execute(
+                    """INSERT INTO vault_entries 
+                    (title, username, encrypted_password, created_at, updated_at) 
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (title, user_ent.get(), enc_data, now, now)
+                )
+                self.load_data()
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", "Failed to save entry. Check logs.")
+                print(f"[SAVE ENTRY ERROR] {e}")
 
-            self.load_data()
-            dialog.destroy()
-
-        ttk.Button(dialog, text="Save", command=save).grid(row=2, column=1, pady=20)
+        ttk.Button(dialog, text="Save", command=save).pack(pady=20)
 
     def delete_selected_entry(self):
         selected = self.table.selection()
         if not selected:
             return
+        if messagebox.askyesno("Confirm", "Delete selected entry?"):
+            entry_id = self.table.item(selected[0])['values'][0]
+            self.db.execute("DELETE FROM vault_entries WHERE id = ?", (entry_id,))
+            self.load_data()
 
-        item = self.table.item(selected[0])
-        entry_id = item['values'][0]
+    def show_change_password_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Rotate Master Keys")
+        dialog.geometry("400x450")
+        dialog.grab_set()
 
-        self.db.execute("DELETE FROM vault_entries WHERE id = ?", (entry_id,))
+        ttk.Label(dialog, text="Current Password:").pack(pady=5)
+        old_ent = PasswordEntry(dialog)
+        old_ent.pack(pady=5, padx=20, fill=tk.X)
 
-        self.events.publish(EventType.ENTRY_DELETED, {
-            'action': 'ENTRY_DELETED',
-            'id': entry_id
-        })
+        ttk.Label(dialog, text="New Password:").pack(pady=5)
+        new_ent = PasswordEntry(dialog)
+        new_ent.pack(pady=5, padx=20, fill=tk.X)
 
-        self.load_data()
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(dialog, variable=progress_var, maximum=100)
 
-    def show_logs_stub(self):
-        messagebox.showinfo("Logs", "Audit Log Viewer will be implemented in Sprint 5")
+        self._is_paused = False
+        msg_queue = queue.Queue()
 
-    def show_settings_stub(self):
-        sett = tk.Toplevel(self.root)
-        sett.title("Settings")
-        notebook = ttk.Notebook(sett)
+        def toggle_pause():
+            self._is_paused = not self._is_paused
+            pause_btn.config(text="Resume" if self._is_paused else "Pause")
 
-        tab_security = ttk.Frame(notebook)
-        tab_appearance = ttk.Frame(notebook)
-        tab_advanced = ttk.Frame(notebook)
+        pause_btn = ttk.Button(dialog, text="Pause", command=toggle_pause, state=tk.DISABLED)
 
-        notebook.add(tab_security, text="Security")
-        notebook.add(tab_appearance, text="Appearance")
-        notebook.add(tab_advanced, text="Advanced")
+        def process_messages():
+            try:
+                while True:
+                    msg = msg_queue.get_nowait()
+                    if isinstance(msg, (int, float)):
+                        progress_var.set(msg)
+                    elif msg == "DONE":
+                        messagebox.showinfo("Success", "Keys rotated and storage re-encrypted.")
+                        dialog.destroy()
+                        self.lock_app()
+                    elif msg.startswith("ERROR"):
+                        messagebox.showerror("Critical Error",
+                                             "Operation failed due to security constraints. Check logs.")
+                        dialog.destroy()
+            except queue.Empty:
+                if dialog.winfo_exists():
+                    self.root.after(100, process_messages)
 
-        ttk.Label(tab_security, text="Clipboard Timeout (s):").pack(pady=5)
-        ttk.Entry(tab_security).pack(pady=5)
+        def worker(old_p, new_p):
+            conn = sqlite3.connect(self.config.get('db_path'))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            try:
+                if len(old_p) > 1024 or len(new_p) > 1024:
+                    raise ValueError("Invalid input length")
 
-        ttk.Label(tab_security, text="Auto-lock Timeout (s):").pack(pady=5)  # Added Auto-lock
-        ttk.Entry(tab_security).pack(pady=5)
+                cursor.execute("SELECT password_hash, salt FROM users WHERE username='admin'")
+                user = cursor.fetchone()
+                if not user:
+                    msg_queue.put("ERROR: User not found")
+                    return
 
-        notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
-        sett.geometry("400x300")
+                old_auth_key = self.key_manager.derivator.derive_argon2(old_p, bytes.fromhex(user['salt'])).hex()
+                if not secrets.compare_digest(old_auth_key, user['password_hash']):
+                    msg_queue.put("ERROR: Invalid current password")
+                    return
+
+                cursor.execute("BEGIN TRANSACTION")
+
+                new_auth_salt = self.key_manager.derivator.generate_salt()
+                new_pass_hash = self.key_manager.derivator.derive_argon2(new_p, new_auth_salt).hex()
+
+                new_enc_salt = self.key_manager.derivator.generate_salt(16)
+                iterations = 100000
+
+                cursor.execute("SELECT key_data FROM key_store WHERE key_type='enc_salt'")
+                old_salt_row = cursor.fetchone()
+                cursor.execute("SELECT key_data FROM key_store WHERE key_type='params'")
+                old_params_row = cursor.fetchone()
+
+                if not old_salt_row or not old_params_row:
+                    raise Exception("Key store data missing")
+
+                old_enc_salt = old_salt_row['key_data']
+                old_params = json.loads(old_params_row['key_data'].decode('utf-8'))
+                old_iterations = old_params.get('iterations', 100000)
+
+                old_key = self.key_manager.derivator.derive_pbkdf2(old_p, old_enc_salt, old_iterations)
+                new_key = self.key_manager.derivator.derive_pbkdf2(new_p, new_enc_salt, iterations)
+
+                old_km = KeyManager()
+                old_km.set_key("tmp_old", old_key)
+                old_crypto = AES256Placeholder(old_km)
+
+                new_km = KeyManager()
+                new_km.set_key("tmp_new", new_key)
+                new_crypto = AES256Placeholder(new_km)
+
+                cursor.execute("SELECT id, encrypted_password FROM vault_entries")
+                rows = cursor.fetchall()
+                total = len(rows)
+
+                for i, row in enumerate(rows):
+                    while self._is_paused:
+                        time.sleep(0.1)
+
+                    decrypted = old_crypto.decrypt(row['encrypted_password'], "tmp_old")
+                    new_cipher = new_crypto.encrypt(decrypted, "tmp_new")
+
+                    cursor.execute("UPDATE vault_entries SET encrypted_password = ? WHERE id = ?",
+                                   (new_cipher, row['id']))
+
+                    progress = ((i + 1) / total) * 100 if total > 0 else 100
+                    msg_queue.put(progress)
+
+                cursor.execute("UPDATE users SET password_hash=?, salt=? WHERE username='admin'",
+                               (new_pass_hash, new_auth_salt.hex()))
+
+                cursor.execute("UPDATE key_store SET key_data=?, version=version+1 WHERE key_type='enc_salt'",
+                               (new_enc_salt,))
+
+                params_data = json.dumps({'iterations': iterations}).encode('utf-8')
+                cursor.execute("UPDATE key_store SET key_data=?, version=version+1 WHERE key_type='params'",
+                               (params_data,))
+
+                conn.commit()
+                msg_queue.put("DONE")
+
+            except Exception as e:
+                conn.rollback()
+                print(f"[SEC-2] Critical error during rotation: {type(e).__name__}")
+                msg_queue.put("ERROR: Operation failed due to security constraints.")
+            finally:
+                conn.close()
+
+        def start():
+            new_pass = new_ent.get()
+            is_strong, msg = self.key_manager.derivator.check_password_strength(new_pass)
+            if not is_strong:
+                messagebox.showwarning("Weak Password", msg)
+                return
+
+            pause_btn.config(state=tk.NORMAL)
+            progress_bar.pack(pady=20, padx=20, fill=tk.X)
+            threading.Thread(target=worker, args=(old_ent.get(), new_pass), daemon=True).start()
+            process_messages()
+
+        ttk.Button(dialog, text="Start Re-encryption", command=start).pack(pady=10)
+        pause_btn.pack(pady=5)

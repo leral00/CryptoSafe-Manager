@@ -1,47 +1,30 @@
-import time
+from datetime import datetime
 
 class StateManager:
-
     def __init__(self):
-        self._is_locked = True
-        self._current_user = None
-        self._clipboard_content = None
-        self._clipboard_timestamp = 0
-        self._last_activity_time = time.time()
+        self._state = {
+            'session_user': None,
+            'login_time': None,
+            'last_activity': None,
+            'failed_attempts': 0  
+        }
 
-    def lock(self):
-        self._is_locked = True
-        self._current_user = None
-        self._clipboard_content = None
+    def start_session(self, username: str):
+        self._state['session_user'] = username
+        self._state['login_time'] = datetime.now()
+        self._state['last_activity'] = datetime.now()
 
-    def unlock(self, username: str):
-        self._is_locked = False
-        self._current_user = username
-        self.reset_inactivity_timer()
+    def update_activity(self):
+        self._state['last_activity'] = datetime.now()
 
-    @property
-    def is_locked(self) -> bool:
-        return self._is_locked
+    def record_failed_attempt(self):
+        self._state['failed_attempts'] += 1
 
-    @property
-    def current_user(self) -> str:
-        return self._current_user
+    def reset_failed_attempts(self):
+        self._state['failed_attempts'] = 0
 
-    def set_clipboard(self, content: str):
+    def get_failed_attempts(self) -> int:
+        return self._state['failed_attempts']
 
-        self._clipboard_content = content
-        self._clipboard_timestamp = time.time()
-
-    def get_clipboard(self) -> str:
-        return self._clipboard_content
-
-    def get_clipboard_age(self) -> float:
-        if not self._clipboard_content:
-            return 0
-        return time.time() - self._clipboard_timestamp
-
-    def reset_inactivity_timer(self):
-        self._last_activity_time = time.time()
-
-    def get_inactive_seconds(self) -> float:
-        return time.time() - self._last_activity_time
+    def get_session_info(self) -> dict:
+        return self._state

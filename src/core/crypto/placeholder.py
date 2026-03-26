@@ -1,17 +1,12 @@
 from src.core.crypto.abstract import EncryptionService
-import hashlib
 class AES256Placeholder(EncryptionService):
-    def encrypt(self, data: bytes, key: bytes) -> bytes:
-        if not key: return data
+    def encrypt(self, data: bytes, key_id: str) -> bytes:
+        key = self.key_manager.get_key(key_id)
+
+        if not key:
+            raise ValueError(f"Ключ с ID {key_id} не найден в KeyManager")
         key_repeated = (key * ((len(data) // len(key)) + 1))[:len(data)]
         return bytes([b ^ k for b, k in zip(data, key_repeated)])
 
-    def decrypt(self, ciphertext: bytes, key: bytes) -> bytes:
-        return self.encrypt(ciphertext, key)
-class SimpleKDF:
-
-    def derive(self, password: str, salt: bytes) -> bytes:
-        if not password or not salt:
-            raise ValueError("Password and salt required")
-        temp_data = password.encode('utf-8') + salt
-        return hashlib.sha256(temp_data).digest()
+    def decrypt(self, ciphertext: bytes, key_id: str) -> bytes:
+        return self.encrypt(ciphertext, key_id)

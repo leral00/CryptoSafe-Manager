@@ -2,9 +2,8 @@ import sqlite3
 import os
 import base64
 from datetime import datetime
-from typing import Optional, List
-from contextlib import contextmanager
-from .models import ALL_SCHEMAS, VaultEntry
+from typing import List, Dict, Optional
+from .models import VaultEntry
 
 class DatabaseHelper:
     def __init__(self, db_path: str = "cryptosafe.db"):
@@ -21,9 +20,7 @@ class DatabaseHelper:
     def get_connection(self):
         if not self.connection:
             self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
-            # Включаем поддержку Foreign Keys (если нужно)
             self.connection.execute("PRAGMA foreign_keys = ON")
-            # Нужно для доступа к колонкам по имени (через dict(row))
             self.connection.row_factory = sqlite3.Row
         return self.connection
 
@@ -36,25 +33,102 @@ class DatabaseHelper:
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("PRAGMA user_version")
-        version = cursor.fetchone()[0]
+        print("[DB] Initializing database with migration system...")
 
-        if version == 0:
-            print(f"[DB] Создание схемы базы данных...")
-            for schema in ALL_SCHEMAS:
-                cursor.execute(schema)
-            cursor.execute("PRAGMA user_version = 1")
-            conn.commit()
-            print(f"[DB] База данных успешно инициализирована: {self.db_path}")
-        else:
-            print(f"[DB] База данных найдена (версия {version})")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+        """)
+
+        cursor.execute("SELECT MAX(version) FROM schema_migrations")
+        row = cursor.fetchone()
+        current_version = row[0] if row and row[0] is not None else 0
+
+        migrations = self._get_migrations()
+
+        for version, sql_script in migrations.items():
+            if version > current_version:
+                try:
+                    print(f"[DB] Applying migration version {version}...")
+                    cursor.executescript(sql_script)
+
+                    cursor.execute(
+                        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                        (version, datetime.now().isoformat())
+                    )
+                    conn.commit()
+                    print(f"[DB] Migration {version} applied successfully.")
+                except sqlite3.Error as e:
+                    conn.rollback()
+                    print(f"[DB ERROR] Migration {version} failed: {e}")
+                    raise e
+
+        print("[DB] Database is up to date.")
+
+    def _get_migrations(self) -> Dict[int, str]:
+        return {
+            1: """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    salt TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS vault_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    username TEXT,
+                    encrypted_password TEXT,
+                    url TEXT,
+                    notes TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    tags TEXT
+                );
+            """,
+
+            2: """
+                CREATE TABLE IF NOT EXISTS key_store (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key_type TEXT UNIQUE NOT NULL,
+                    key_data BLOB NOT NULL,
+                    version INTEGER NOT NULL,
+                    created_at TEXT
+                );
+            """,
+
+            3: """
+                CREATE TABLE IF NOT EXISTS settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT NOT NULL
+                );
+
+                INSERT INTO settings (setting_key, setting_value) VALUES 
+                ('password_min_length', '12'),
+                ('password_policy_mixed', 'true'),
+                ('key_iterations', '100000'),
+                ('auto_lock_timeout', '3600');
+            """,
+
+            4: """
+                ALTER TABLE users ADD COLUMN mfa_secret TEXT;
+            """
+        }
 
     def execute(self, query, params=()):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(query, params)
-        conn.commit()
-        return cursor
+        try:
+            cursor.execute(query, params)
+            conn.commit()
+            return cursor
+        except sqlite3.Error as e:
+            print(f"[DB ERROR] Ошибка выполнения запроса: {e}")
+            conn.rollback()
+            raise e
 
     def fetchall(self, query, params=()):
         conn = self.get_connection()
@@ -62,111 +136,50 @@ class DatabaseHelper:
         cursor.execute(query, params)
         return cursor.fetchall()
 
-    def add_entry(self, entry: VaultEntry) -> int:
+    def fetchone(self, query, params=()):
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+        cursor.execute(query, params)
+        return cursor.fetchone()
+
+    def get_setting(self, key: str, default=None):
+        try:
+            row = self.fetchone("SELECT setting_value FROM settings WHERE setting_key = ?", (key,))
+            if row:
+                return row['setting_value']
+            return default
+        except Exception as e:
+            print(f"[DB] Error getting setting {key}: {e}")
+            return default
+
+    def set_setting(self, key: str, value: str):
+        try:
+            self.execute(
+                "INSERT OR REPLACE INTO settings (setting_key, setting_value) VALUES (?, ?)",
+                (key, str(value))
+            )
+        except Exception as e:
+            print(f"[DB] Error setting {key}: {e}")
+
+    def add_entry(self, entry: VaultEntry) -> int:
         created_at = entry.created_at.isoformat() if entry.created_at else datetime.now().isoformat()
         updated_at = entry.updated_at.isoformat() if entry.updated_at else datetime.now().isoformat()
 
-        pass_str = base64.b64encode(entry.encrypted_password).decode('utf-8')
+        pass_data = entry.encrypted_password
+        if isinstance(pass_data, bytes):
+            pass_str = base64.b64encode(pass_data).decode('utf-8')
+        else:
+            pass_str = pass_data
 
-        cursor.execute("""
+        cursor = self.execute("""
           INSERT INTO vault_entries 
           (title, username, encrypted_password, url, notes, created_at, updated_at, tags)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-          entry.title, 
-          entry.username, 
-          pass_str, # Сохраняем строку
-          entry.url, 
-          entry.notes, 
-          created_at, 
-          updated_at, 
-          entry.tags
+            entry.title, entry.username, pass_str, entry.url,
+            entry.notes, created_at, updated_at, entry.tags
         ))
-        conn.commit()
         return cursor.lastrowid
 
-    def get_entry(self, entry_id: int) -> Optional[VaultEntry]:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT * FROM vault_entries WHERE id = ?",
-            (entry_id,)
-        )
-        row = cursor.fetchone()
-        if row:
-            data = dict(row)
-
-            if data.get('encrypted_password'):
-                try:
-                    data['encrypted_password'] = base64.b64decode(data['encrypted_password'])
-                except Exception:
-                    pass # Если там не base64, оставляем как есть
-
-            if data.get('created_at'):
-                data['created_at'] = datetime.fromisoformat(data['created_at'])
-            if data.get('updated_at'):
-                data['updated_at'] = datetime.fromisoformat(data['updated_at'])
-            
-            return VaultEntry(**data)
-        return None
-
-    def get_all_entries(self) -> List[VaultEntry]:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM vault_entries ORDER BY updated_at DESC")
-        
-        entries = []
-        for row in cursor.fetchall():
-            data = dict(row)
-
-            if data.get('encrypted_password'):
-                try:
-                    data['encrypted_password'] = base64.b64decode(data['encrypted_password'])
-                except Exception:
-                    pass
-
-            if data.get('created_at'):
-                data['created_at'] = datetime.fromisoformat(data['created_at'])
-            if data.get('updated_at'):
-                data['updated_at'] = datetime.fromisoformat(data['updated_at'])
-            
-            entries.append(VaultEntry(**data))
-        return entries
-
-    def update_entry(self, entry: VaultEntry):
-        if entry.id is None:
-            raise ValueError("ID не может быть None")
-        
-        entry.updated_at = datetime.now()
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
-        pass_str = base64.b64encode(entry.encrypted_password).decode('utf-8')
-        time_str = entry.updated_at.isoformat()
-
-        cursor.execute("""
-            UPDATE vault_entries 
-            SET title=?, username=?, encrypted_password=?, url=?, 
-                notes=?, updated_at=?, tags=?
-            WHERE id=?
-        """, (entry.title, entry.username, pass_str,
-              entry.url, entry.notes, time_str, entry.tags, entry.id))
-        conn.commit()
-
     def delete_entry(self, entry_id: int):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM vault_entries WHERE id = ?", (entry_id,))
-        conn.commit()
-
-    def backup_db(self, backup_path):
-        print(f"[STUB] Backup called. Target: {backup_path}")
-        pass
-
-    def restore_db(self, restore_path):
-        print(f"[STUB] Restore called. Source: {restore_path}")
-        pass
+        self.execute("DELETE FROM vault_entries WHERE id = ?", (entry_id,))
